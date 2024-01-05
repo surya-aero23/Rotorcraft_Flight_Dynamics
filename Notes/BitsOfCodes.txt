@@ -1,0 +1,57 @@
+def orient_azimuth_with_t(parent_frame, child_frame, component, blade, t=0):
+
+    omega = np.sqrt(component.rpm[0] ** 2 + component.rpm[1] ** 2 + component.rpm[2] ** 2)
+    psi = omega * t + float(((2 * PI) * (blade - 1) / component.blade_no))
+
+    F1 = vec.ReferenceFrame('F1')
+    F2 = vec.ReferenceFrame('F2')
+    F2.orient(F1, 'Axis', (psi, F1.z))
+    DCM = F1.dcm(F2)
+
+    child_frame.__dict__.get('_dcm_dict').update({parent_frame: DCM})
+    parent_frame.__dict__.get('_dcm_dict').update({child_frame: DCM.transpose()})
+
+    return 0
+
+
+
+    # def integrate_loads():
+    #     """
+    #     :return: [ [lift, drag, side force], [mx, my, mz] ]
+    #     """
+    #
+    #     total_lift, total_drag, total_side_force, total_moment_x, total_moment_y, total_moment_z = Num.simpsons_rule([sectional_lift, sectional_drag, sectional_side_force, sectional_moment_x, sectional_moment_y, sectional_moment_z], Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0], 6)
+    #     # total_drag = Num.simpsons_rule(sectional_drag, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+    #     # total_side_force = Num.simpsons_rule(sectional_side_force, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+    #     # total_moment_x = Num.simpsons_rule(sectional_moment_x, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+    #     # total_moment_y = Num.simpsons_rule(sectional_moment_y, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+    #     # total_moment_z = Num.simpsons_rule(sectional_moment_z, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+    #
+    #     return [[total_lift, total_drag, total_side_force], [total_moment_x, total_moment_y, total_moment_z]]
+
+
+# def simpsons_rule(f_vals, low_lim, up_lim, length=1):
+#     result = []
+#     for j in range(length):
+#         n = len(f_vals[j])
+#         if n % 2 == 0:
+#             return 'No. of function entries not in even intervals!'
+#         else:
+#             h = (up_lim - low_lim) / (3 * n)        # This is h / 3 not h
+#             value = f_vals[j][0] + f_vals[j][n - 1]
+#             for i in range(1, n-1):
+#                 if i % 2 == 0:
+#                     value += 2 * f_vals[j][i]
+#                 if i % 2 != 0:
+#                     value += 4 * f_vals[j][i]
+#             value = h * value
+#         if math.isnan(value) is True:
+#             value = 0
+#         if -10 ** -5 < value < 10 ** -5:
+#             value = 0
+#         result.append(value)
+#     if len(result) == 1:
+#         return result[0]
+#     else:
+#         return result
+

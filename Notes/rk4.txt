@@ -1,0 +1,59 @@
+def rk4_solver(f, conditions, t_0, step_size):
+    iterations = 10 ** 3
+    tolerance = 10 ** -5
+    error = [1, 1, 1]
+    count = 0
+    t = t_0
+
+    if isinstance(f, list) is True:
+        length = len(f)
+    else:
+        length = 0
+
+    if length > 0:
+        while max(error) > tolerance and count < iterations:
+            error = []
+            k1 = f(t, conditions)
+            k1_temp = [(x * step_size / 2) for x in k1]
+            k2 = f(t + 0.5 * step_size, k1_temp)
+            k2_temp = [(x * step_size / 2) for x in k2]
+            k3 = f(t + 0.5 * step_size, k2_temp)
+            k3_temp = [x + (y*step_size) for x, y in (conditions, k3)]
+            k4 = f(t + step_size, k3_temp)
+            new_conditions = [u + (step_size/6) * (v + 2 * (w + x) + y) for u, v, w, x, y in [conditions, k1, k2, k3, k4]]
+            conditions = new_conditions
+            count += 1
+            for i in range(len(conditions)):
+                error.append(abs(conditions[i] - new_conditions[i]))
+    return new_conditions
+
+
+def rk4_solver(f, init_con, t_0, step_size):
+    iterations = 10 ** 3
+    tolerance = 10 ** -5
+    error = [1, 1, 1]
+    count = 0
+    t = t_0
+
+    if isinstance(f, list) is True:
+        length = len(f)
+    else:
+        length = 0
+
+    if length > 0:
+        while max(error) > tolerance and count < iterations:
+            error = []
+            k1 = f(t, init_con)
+            k1_temp = [(x * step_size / 2) for x in k1]
+            k2 = f(t + 0.5 * step_size, k1_temp)
+            k2_temp = [(x * step_size / 2) for x in k2]
+            k3 = f(t + 0.5 * step_size, k2_temp)
+            k3_temp = [x + (y * step_size) for x, y in (init_con, k3)]
+            k4 = f(t + step_size, k3_temp)
+            new_conditions = [u + (step_size / 6) * (v + 2 * (w + x) + y) for u, v, w, x, y in
+                              [init_con, k1, k2, k3, k4]]
+            init_con = new_conditions
+            count += 1
+            for i in range(len(init_con)):
+                error.append(abs(init_con[i] - new_conditions[i]))
+    return new_conditions

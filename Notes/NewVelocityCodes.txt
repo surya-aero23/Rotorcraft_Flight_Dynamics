@@ -1,0 +1,57 @@
+def find_ang_vel_in(component, frame):
+    ang_vel, blade = 0, 0
+    name = frame.name
+    match = re.search('blade_', name)
+    if match is not None:
+        blade = int(name[match.end()])
+    match = re.search('station_', name)
+    ref = component.rotary_ref_frames[blade]
+
+    if match is None and blade > 0:
+        index = ref.index(frame)
+        while index >= 0:
+            ang_vel += transform_vector(ref[index].__dict__.get('_ang_vel_dict').get(ref[index], 0), ref[index], frame)
+            index -= 1
+
+    if match is not None:
+        'Station calculations'
+        ref_stations = component.stations_ref_frames[blade - 1]
+        index = ref_stations.index(frame)
+        while index >= 0:
+            ang_vel += transform_vector(ref_stations[index].__dict__.get('_ang_vel_dict').get(ref_stations[index], 0), ref_stations[index], frame)
+            index -= 1
+
+        'Blade calculations'
+        index = len(ref) - 1
+        while index >= 0:
+            ang_vel += transform_vector(ref[index].__dict__.get('_ang_vel_dict').get(ref[index], 0), ref[index], frame)
+            index -= 1
+    ang_vel += transform_vector(component.rotary_ref_frames[0].__dict__.get('_ang_vel_dict').get(component.rotary_ref_frames[0], 0), component.rotary_ref_frames[0], frame) + transform_vector(Gb.body_fixed_cg.__dict__.get('_ang_vel_dict').get(Gb.body_fixed_cg, 0), Gb.body_fixed_cg, frame)
+    return ang_vel
+
+
+
+
+def find_net_vel_of(component, frame, r=0):
+    if r == 0:
+        r = 0 * frame.x
+    omega_frame = find_ang_vel_in(component, frame)
+    wxr_point = omega_frame.cross(r)
+    net_vel = wxr_point
+
+    frame_of_interest = frame
+    v_frame = 0
+    parent = frame.__dict__.get('_pv_parent')
+    while parent != Gb.body_fixed_cg and parent is not None:
+        omega_parent = find_ang_vel_in(component, parent)
+        pos_vec = frame.__dict__.get('_pos_vec_dict', 0)
+        wxr = transform_vector(omega_parent.cross(pos_vec), parent, frame_of_interest)
+        v_frame += transform_vector(frame.__dict__.get('_trans_vel_dict', 0), frame, frame_of_interest) + wxr
+        frame = parent
+        parent = frame.__dict__.get('_pv_parent')
+
+    v_cg = Gb.body_fixed_cg.__dict__.get('_trans_vel_dict', 0)
+    v_cg = transform_vector(v_cg, Gb.body_fixed_cg, frame_of_interest)
+    net_vel = net_vel + v_frame + v_cg
+
+    return net_vel

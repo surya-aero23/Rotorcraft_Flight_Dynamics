@@ -1,0 +1,557 @@
+import sympy as sm
+import numpy as np
+import time as ti
+from sympy.physics import vector as vec
+
+import Global as Gb
+from NumericalMethods import interpolate
+
+
+PI = np.pi
+zero_vector_list = [0, 0, 0]
+F1 = vec.ReferenceFrame('F1')
+F2 = vec.ReferenceFrame('F2')
+
+
+# noinspection PyGlobalUndefined
+def set_angles(angles=None):
+    global shaft_angle, t, theta_i, beta_k, lag_k, torsion_k
+    if angles is None:
+        shaft_angle = sm.symbols('shaft_angle')
+        t = sm.symbols('t')
+        theta_i = sm.symbols('theta_i')
+        beta_k = sm.symbols('beta_k')
+        lag_k = sm.symbols('lag_k')
+        torsion_k = sm.symbols('torsion_k')
+    else:
+        shaft_angle, t, theta_i, beta_k, lag_k, torsion_k = angles
+    return 0
+
+
+def vectorize_list(vector, frame, n=1):
+    """
+
+    :param vector: vector as a list in the given reference frame
+    :param frame: frame object in which vector is defined
+    :param n: number of vectors in the list, 1 by default
+    :return: sympy.physics.vector.Vector object / objects
+    """
+    if n > 1:
+        converted_vectors = []
+        for i in range(0, n):
+            v_i = vector[i][0] * frame.x + vector[i][1] * frame.y + vector[i][2] * frame.z
+            converted_vectors.append(v_i)
+        return converted_vectors
+    if n == 1:
+        v_i = vector[0] * frame.x + vector[1] * frame.y + vector[2] * frame.z
+        return v_i
+
+
+def vec_to_list(vector, frame):
+    if vector == 0:
+        vector_list = [0, 0, 0]
+    else:
+        vector_list = [vector.dot(frame.x), vector.dot(frame.y), vector.dot(frame.z)]
+    return vector_list
+
+
+def cross_pdt(v1, v2):
+    """
+
+    :param v1: vector 1 as a list
+    :param v2: vector 2 as a list
+    :return: cross pdt as a list
+    """
+    result = [v1[1] * v2[2] - v1[2] * v2[1],
+              v1[2] * v2[0] - v1[0] * v2[2],
+              v1[0] * v2[1] - v1[1] * v2[0]]
+    return result
+
+
+def set_7_vectors(vectors_list, parent_frame, child_frame, pivot_frame=None):
+    """
+
+    :param vectors_list: Position vector, Translational Velocity and Acceleration
+            Angular Velocity and Acceleration as a list of lists.
+    :param parent_frame: Frame with respect to which all these vectors are defined
+    :param child_frame: Frame whose properties these vectors define
+
+    :return: 0
+    """
+
+    pos_vec = vectorize_list(vectors_list[0], parent_frame)
+    forces, moments = vectors_list[-2], vectors_list[-1]
+    del vectors_list[0], vectors_list[-2], vectors_list[-1]
+    trans_vel, trans_acc, ang_vel, ang_acc = vectorize_list(vectors_list, child_frame, 4)
+
+    if pivot_frame is not None:
+        vector_dict = {'_pos_vec_dict': pos_vec, '_trans_vel_dict': trans_vel, '_trans_acc_dict': trans_acc, '_loads': [forces, moments], '_pivot_frame': pivot_frame, '_pv_parent': parent_frame}
+    else:
+        vector_dict = {'_pos_vec_dict': pos_vec, '_trans_vel_dict': trans_vel, '_trans_acc_dict': trans_acc, '_loads': [forces, moments], '_pivot_frame': parent_frame, '_pv_parent': parent_frame}
+
+    child_frame.__dict__.update(vector_dict)
+    child_frame.set_ang_vel(child_frame, ang_vel)
+    child_frame.set_ang_acc(child_frame, ang_acc)
+    return 0
+
+
+def generate_zero_vectors(n=1):
+    vectors = []
+    zeros = [0, 0, 0]
+    for k in range(n):
+        vectors.append(zeros)
+    return vectors
+
+
+def dcm(to_frame, from_frame, order=True):
+    """
+
+    :param order: True if the to_frame is a hierarchical parent of the from_frame (True by default)
+    :param to_frame: The reference frame on the left hand side of the equation.
+    :param from_frame: The reference frame on the right hand side of the equation.
+    :return: dcm
+    """
+
+    def calculate_dcm(to_frame, from_frame):
+        DCM = np.identity(3)
+        stopper_list = [0]
+        stopper_var = True
+
+        pivot = to_frame.__dict__.get('_pv_parent', None)
+        pivot_check = True
+
+        while stopper_var:
+            # print(f"\nFrom and To Frame: {from_frame}\t{to_frame}")
+
+            if to_frame.__dict__.get('_dcm_dict').get(from_frame) is not None:
+                # print(1)
+                DCM = np.matmul(to_frame.__dict__.get('_dcm_dict').get(from_frame), DCM)
+                stopper_var = False
+
+            else:
+                # print(2)
+                parent = [*from_frame.__dict__.get('_dcm_dict').keys()]
+                # print(f"parent list: {from_frame, parent}")
+                if (from_frame != Gb.body_fixed_cg and len(parent) > 1) and any([stopper_list.count(parent[0]), stopper_list.count(from_frame), stopper_list.count(parent[-1])]):
+                    # print('2.0.1')
+                    if pivot_check:
+                        try:
+                            index = parent.index(pivot)
+                            parent = parent[index]
+                            pivot_check = False
+                        except ValueError:
+                            parent = parent[1]
+                    else:
+                        parent = parent[1]
+                else:
+                    # print('2.0.2')
+                    parent = parent[0]
+                if stopper_list.count(from_frame) > 5:   # Estimate the correctness of this logic otherwise may increase time
+                    # print(2.1)
+                    # print(f"Parent and From frame: {parent}\t{from_frame}")
+                    DCM = np.matmul(parent.__dict__.get('_dcm_dict').get(from_frame), DCM)
+                    stopper_var = False
+                else:
+                    # print(2.2)
+                    # print(f"Parent and From frame: {parent}\t{from_frame}")
+                    DCM = np.matmul(parent.__dict__.get('_dcm_dict').get(from_frame), DCM)
+                    # stopper_list.append(from_frame)
+                    from_frame = parent
+            stopper_list.append(from_frame)
+        return DCM
+
+    if order is True:
+        Dcm = calculate_dcm(to_frame, from_frame)
+
+    else:
+        Dcm = calculate_dcm(from_frame, to_frame).transpose()
+
+    return sm.simplify(Dcm)
+
+
+def transform_vector(vector, from_frame, to_frame):
+
+    DCM = to_frame.dcm(from_frame)
+    vector = np.asarray(vec_to_list(vector, from_frame))
+    transformed_vector = vectorize_list(np.matmul(DCM, (vector.transpose())), to_frame)
+
+    return transformed_vector
+
+
+# def find_ang_vel_in(frame):
+#     ang_vel = 0
+#     final_frame = frame
+#     while frame is not Gb.body_fixed_cg:
+#         parent = [*frame.__dict__.get('_dcm_dict').keys()]
+#         parent = parent[0]
+#         if frame.__dict__.get('_ang_vel_dict').get(frame, 0) == 0:
+#             ang_vel = ang_vel + transform_vector(parent.__dict__.get('_ang_vel_dict').get(parent, 0), parent, final_frame)
+#             frame = parent
+#         else:
+#             ang_vel += transform_vector(frame.__dict__.get('_ang_vel_dict').get(frame, 0), frame, final_frame)
+#             frame = parent
+#         print(f"frame: {frame}\tang_vel: {ang_vel}")
+#         #     break
+#     return ang_vel + transform_vector(Gb.body_fixed_cg.__dict__.get('_ang_vel_dict').get(Gb.body_fixed_cg, 0), Gb.body_fixed_cg, final_frame)
+
+
+def find_ang_vel_in(frame):
+    if frame is Gb.body_fixed_cg:
+        return Gb.body_fixed_cg.__dict__.get('_ang_vel_dict').get(Gb.body_fixed_cg)
+    else:
+        parent = [*frame.__dict__.get('_dcm_dict').keys()]
+        parent = parent[0]
+        ang_vel_parent = find_ang_vel_in(parent)
+        ang_vel_parent = transform_vector(ang_vel_parent, parent, frame)
+        # DCM = dcm(frame, parent)
+        # ang_vel_parent = ang_vel_parent.to_matrix(parent)
+        # ang_vel_parent = DCM * ang_vel_parent
+        # ang_vel_parent = vectorize_list(ang_vel_parent, frame)
+        ang_vel = frame.__dict__.get('_ang_vel_dict').get(frame, 0) + ang_vel_parent
+        return ang_vel
+
+
+def find_ang_vel_in(frame):
+    if frame is Gb.body_fixed_cg:
+        return Gb.body_fixed_cg.__dict__.get('_ang_vel_dict').get(Gb.body_fixed_cg)
+    else:
+        parent = [*frame.__dict__.get('_dcm_dict').keys()]
+        parent = parent[0]
+        ang_vel_parent = find_ang_vel_in(parent)
+        ang_vel_parent = transform_vector(ang_vel_parent, parent, frame)
+        # DCM = dcm(frame, parent)
+        # ang_vel_parent = ang_vel_parent.to_matrix(parent)
+        # ang_vel_parent = DCM * ang_vel_parent
+        # ang_vel_parent = vectorize_list(ang_vel_parent, frame)
+        ang_vel = frame.__dict__.get('_ang_vel_dict').get(frame, 0) + ang_vel_parent
+        return ang_vel
+
+
+def find_net_vel_of(r, frame_of_pv):
+
+    omega_frame = find_ang_vel_in(frame_of_pv)
+    wxr_point = omega_frame.cross(r)
+    net_vel = wxr_point
+
+    v_frame = 0
+    frame = frame_of_pv
+
+    while frame is not Gb.body_fixed_cg:
+        parent = [*frame.__dict__.get('_dcm_dict').keys()]
+        parent = parent[0]
+        omega = find_ang_vel_in(parent)
+
+        if frame.__dict__.get('_pv_parent') == parent:
+            r_frame = frame.__dict__.get('_pos_vec_dict', 0)
+        else:
+            r_frame = 0 * parent.x
+
+        wxr = omega.cross(r_frame)
+        v_frame = v_frame + transform_vector(wxr, parent, frame_of_pv) + transform_vector(frame.__dict__.get('_trans_vel_dict', 0), frame, frame_of_pv)
+        frame = parent
+
+    v_cg = Gb.body_fixed_cg.__dict__.get('_trans_vel_dict', 0)
+    v_cg = transform_vector(v_cg, Gb.body_fixed_cg, frame_of_pv)
+    net_vel = net_vel + v_frame + v_cg
+
+    return net_vel
+
+
+def find_net_loads(child_frame, parent_frame):
+    """From child frame to parent frame"""
+
+    pv_parent = child_frame.__dict__.get('pv_parent')
+
+    while pv_parent is not parent_frame:
+        forces, moments = child_frame.__dict__.get('frame_loads')
+        forces, moments = vectorize_list([forces, moments], child_frame, 2)
+        pv = child_frame.__dict__.get('position_vector')
+        'Is there frame loads and then net frame loads?'
+        f_trans_parent = transform_vector(forces, child_frame, pv_parent)
+        m_trans_parent = transform_vector(moments, child_frame, pv_parent)
+        f = vec_to_list(f_trans_parent)
+        m = pv.cross(f_trans_parent)
+        m_trans_parent = vec_to_list(m_trans_parent + m)
+        total_force, total_moment = pv_parent.__dict__.get('frame_loads')
+        total_force = [(total_force[i] + f[i]) for i in range(3)]
+        total_moment = [(total_moment[i] + m_trans_parent[i]) for i in range(3)]
+        pv_parent.__dict__.update({'frame_loads_net': [total_force, total_moment]})
+        child_frame = pv_parent
+        pv_parent = pv_parent.__dict__.get('pv_parent')
+
+    if pv_parent is parent_frame:
+        forces, moments = child_frame.__dict__.get('frame_loads')
+        forces, moments = vectorize_list([forces, moments], child_frame, 2)
+        pv = child_frame.__dict__.get('position_vector')
+        f_trans_parent = transform_vector(forces, child_frame, pv_parent)
+        m_trans_parent = transform_vector(moments, child_frame, pv_parent)
+        f = vec_to_list(f_trans_parent)
+        m = pv.cross(f_trans_parent)
+        m_trans_parent = vec_to_list(m_trans_parent + m)
+        total_force, total_moment = pv_parent.__dict__.get('frame_loads')
+        total_force = [(total_force[i] + f[i]) for i in range(3)]
+        total_moment = [(total_moment[i] + m_trans_parent[i]) for i in range(3)]
+        pv_parent.__dict__.update({'frame_loads_net': [total_force, total_moment]})
+
+    f_trans_parent, m_trans_parent = vectorize_list([total_force, total_moment], parent_frame, 2)
+    return f_trans_parent, m_trans_parent
+
+
+
+def orient_with_axis(child_frame, parent_frame, axis, angle):
+    """
+
+    :param child_frame:
+    :param parent_frame:
+    :param axis: string - "x", "y" or "z"
+    :param angle: in radians
+    :return: 0
+    """
+    axis = axis.lower()
+    if axis == 'x':
+        F2.orient(F1, 'Axis', (angle, F1.x))
+    if axis == 'y':
+        F2.orient(F1, 'Axis', (angle, F1.y))
+    if axis == 'z':
+        F2.orient(F1, 'Axis', (angle, F1.z))
+    DCM = F1.dcm(F2)
+    child_frame.__dict__.get('_dcm_dict').update({parent_frame: DCM.transpose()})
+    parent_frame.__dict__.get('_dcm_dict').update({child_frame: DCM})
+    return 0
+
+
+def orient_azimuth_with_psi(parent_frame, child_frame, component, blade, psi):
+
+    if psi == 0:
+        psi_k = float(((2 * PI) * (blade - 1) / component.blade_no))
+    else:
+        psi_k = float(((2 * PI) * (blade - 1) / component.blade_no)) + psi
+
+    F2.orient(F1, 'Axis', (psi_k, F1.z))
+    DCM = F1.dcm(F2)
+
+    child_frame.__dict__.get('_dcm_dict').update({parent_frame: DCM.transpose()})
+    parent_frame.__dict__.get('_dcm_dict').update({child_frame: DCM})
+
+    return 0
+
+
+def orient_cyclic_pitch(parent_frame, child_frame, theta_twist, theta_list, psi):
+    """
+
+    :param parent_frame:
+    :param child_frame:
+    :param theta_twist: In degrees
+    :param theta_list: [theta_0, theta_1c, theta_1s]
+    :param psi: Azimuthal angle in radians
+    :return: 0
+    """
+
+    theta_0, theta_1c, theta_1s = theta_list
+    angle = sm.sympify(np.radians(theta_twist) + theta_0 + theta_1c * np.cos(psi) + theta_1s * np.sin(psi))
+    F2.orient(F1, 'Axis', (angle, F1.x))
+
+    DCM = F1.dcm(F2)
+    child_frame.__dict__.get('_dcm_dict').update({parent_frame: DCM.transpose()})
+    parent_frame.__dict__.get('_dcm_dict').update({child_frame: DCM})
+
+    # DCM2 = parent_frame.dcm(child_frame)    # Small differences arise when doing the computation due to floating points
+    #
+    # if np.max(abs(DCM - DCM2)) > 0.15:
+    #     child_frame.__dict__.get('_dcm_dict').update({parent_frame: DCM.transpose()})
+    #     parent_frame.__dict__.get('_dcm_dict').update({child_frame: DCM})
+
+    return 0
+
+
+def orient_euler(child_frame, euler, parent_frame):
+    """
+
+    :param child_frame: child reference frame
+    :param euler: 3 angles in degrees in the order of ZYX
+    :param parent_frame: Frame wrt which rotation is done
+    :return: DCM of rotation
+    """
+    euler = [np.radians(euler[x]) for x in range(len(euler))]
+    F2.orient(F1, 'Body', (euler[0], euler[1], euler[2]), '321')
+    DCM = F1.dcm(F2)
+
+    child_frame.__dict__.get('_dcm_dict').update({parent_frame: DCM})
+    parent_frame.__dict__.get('_dcm_dict').update({child_frame: DCM.transpose()})
+
+    return DCM
+
+
+def create_cg_frame(v=None, a=None, omega=None, alpha=None):
+    if v is None:
+        v = zero_vector_list
+    if a is None:
+        a = zero_vector_list
+    if omega is None:
+        omega = zero_vector_list
+    if alpha is None:
+        alpha = zero_vector_list
+
+    body_fixed_cg = vec.ReferenceFrame('body_fixed_cg')
+    vectors_in_frame = [zero_vector_list, v, a, omega, alpha]
+    pos_vec_cg_cg, trans_vel_cg_cg, trans_acc_cg_cg, ang_vel_cg_cg, ang_acc_cg_cg = vectorize_list(vectors_in_frame, body_fixed_cg, 5)
+    body_fixed_cg.set_ang_vel(body_fixed_cg, -ang_vel_cg_cg)        # minus is used because it is the same frame
+    body_fixed_cg.set_ang_acc(body_fixed_cg, -ang_acc_cg_cg)        # minus is used because it is the same frame
+    velocity_dict = {'_pos_vec_dict': pos_vec_cg_cg, '_trans_vel_dict': trans_vel_cg_cg, '_trans_acc_dict': trans_acc_cg_cg, '_loads': [generate_zero_vectors(2)]}
+    body_fixed_cg.__dict__.update(velocity_dict)
+    Gb.body_fixed_cg = body_fixed_cg
+
+    return body_fixed_cg
+
+
+def create_rotating_component(rotary_components):
+    global shaft_angle, t, theta_i, beta_k, lag_k, torsion_k
+    for rotary_component in rotary_components:
+        print(f"\nComponent name: {rotary_component.name}\n")
+        start = ti.time()
+        component, euler, locations, blade, rpm, radius, cd0, cm, sections, stations_ref_frames, ref_frames_list_dummy = [*rotary_component.__dict__.values()]
+        ref_frames_list, data_of_stations = [], []
+        # euler = [(euler[i] * np.pi / 180) for i in range(len(euler))]
+        omega = np.sqrt(rpm[0]**2 + rpm[1]**2 + rpm[2]**2)
+
+        # Reference frame for the component itself
+        hub_fixed_nr = vec.ReferenceFrame(component + '_hub_fixed')
+        orient_with_axis(hub_fixed_nr, Gb.body_fixed_cg, 'y', (sm.pi + shaft_angle))
+        # hub_fixed_nr.orient(Gb.body_fixed_cg, 'Body', ([*euler]), '321')
+        vectors_in_this_frame = generate_zero_vectors(7)
+        vectors_in_this_frame[0] = locations[0]
+        set_7_vectors(vectors_in_this_frame, Gb.body_fixed_cg, hub_fixed_nr)
+        rotary_component.rotary_ref_frames.append(hub_fixed_nr)
+        ref_frames_list.append(hub_fixed_nr)
+        # print(f"Time to create the hub fixed frames: {z} seconds")
+
+        hinge_offset = locations[1][0]
+        for i in range(1, len(locations) - 1):      # Hinge offset only along the radial direction of the blade
+            if locations[i+1][0] > hinge_offset:
+                hinge_offset = locations[i + 1][0]
+
+        # Reference frames for the blades
+        for i in range(1, blade + 1):
+            z = ti.time()
+            frames_at_stations = []
+            frames_for_blades = []
+
+            # hub fixed rotating reference frame - azimuth
+            hub_fixed_1k = vec.ReferenceFrame(component + '_hub_fixed_blade_' + str(i) + '_azimuth')
+            psi_k = float(((2 * PI) * (i - 1) / blade))
+            psi_k = omega * t + psi_k
+            # hub_fixed_1k.orient(hub_fixed_nr, 'Axis', (psi_k, hub_fixed_nr.z))
+            orient_with_axis(hub_fixed_1k, hub_fixed_nr, 'z', psi_k)
+            vectors_in_this_frame = generate_zero_vectors(7)
+            vectors_in_this_frame[0] = zero_vector_list
+            vectors_in_this_frame[3] = rpm
+            ''' Which direction is positive? '''
+            set_7_vectors(vectors_in_this_frame, hub_fixed_nr, hub_fixed_1k)
+            ref_frames_list.append(hub_fixed_1k)
+            frames_for_blades.append(hub_fixed_1k)
+
+            """
+            Defining the angles wrt ref_frames_list[-1] has nullified the point of chain definitions of ref frames 
+            thus causing problems in dcm and every calculation made using that.
+            """
+
+            # blade fixed reference frames
+
+            location_of_origin = [locations[1], locations[1], locations[1], locations[2], locations[3]]
+            angles_wrt_parent = [0, theta_i, beta_k, lag_k, torsion_k]
+            angle_text = ['_azimuth', '_pitch', '_flap', '_lag', '_torsion']
+            location_text = ['_flap_hinge', '_flap_hinge', '_flap_hinge', '_lag_hinge', '_torsion_bearing']
+            axis_of_rotation = ['y', 'x', 'y', 'z', 'x']
+            for j in range(len(location_of_origin)):
+                frame = vec.ReferenceFrame(component + location_text[j] + '_blade_' + str(i) + angle_text[j])
+                orient_with_axis(frame, ref_frames_list[-1], axis_of_rotation[j], angles_wrt_parent[j])
+
+                # if axis_of_rotation[j] == 'x':
+                #     frame.orient(ref_frames_list[-1], 'Axis', (angles_wrt_parent[j], ref_frames_list[-1].x))
+                # if axis_of_rotation[j] == 'y':
+                #     frame.orient(ref_frames_list[-1], 'Axis', (angles_wrt_parent[j], ref_frames_list[-1].y))
+                # if axis_of_rotation[j] == 'z':
+                #     frame.orient(ref_frames_list[-1], 'Axis', (angles_wrt_parent[j], ref_frames_list[-1].z))
+
+                vectors_in_this_frame = generate_zero_vectors(7)
+                vectors_in_this_frame[0] = location_of_origin[j]
+                set_7_vectors(vectors_in_this_frame, hub_fixed_1k, frame)
+                ref_frames_list.append(frame)
+                frames_for_blades.append(frame)
+
+            # Creating reference frames at stations
+            stations = np.linspace(hinge_offset + 0.05 * hinge_offset, radius, Gb.RotatingComponent.no_of_stations)
+            for x in range(len(stations)):
+                location_of_origin = [stations[x] - hinge_offset, 0, 0]
+                for m in range(len(angle_text)):
+                    frame = vec.ReferenceFrame(component + '_blade_' + str(i) + f'_station_{x + 1}' + angle_text[m])
+                    if m == 0:
+                        orient_with_axis(frame, ref_frames_list[-1], 'x', angles_wrt_parent[j])
+                        # frame.orient(ref_frames_list[-1], 'Axis', (angles_wrt_parent[m], ref_frames_list[-1].x))
+
+                    if m == 1:
+                        jumper = -1
+                        for k in range(len(sections) - 1):
+                            if stations[x] != jumper and sections[k][0] <= stations[x] <= sections[k + 1][0]:
+                                theta = interpolate(sections[k][0], sections[k][3], sections[k + 1][0], sections[k + 1][3], stations[x])
+                                data_of_stations.append([stations[x], theta])
+                                orient_with_axis(frame, frames_at_stations[-1], 'x', np.radians(theta))
+                                # frame.orient(frames_at_stations[-1], 'Axis', (np.radians(theta), frames_at_stations[-1].x))
+
+                    if axis_of_rotation[m] == 'x' and m > 0:
+                        orient_with_axis(frame, ref_frames_list[-1], axis_of_rotation[m], angles_wrt_parent[j])
+
+                    #     frame.orient(frames_at_stations[-1], 'Axis', (angles_wrt_parent[m], frames_at_stations[-1].x))
+                    #
+                    # if axis_of_rotation[m] == 'y' and m > 0:
+                    #     frame.orient(frames_at_stations[-1], 'Axis', (angles_wrt_parent[m], frames_at_stations[-1].y))
+                    #
+                    # if axis_of_rotation[m] == 'z' and m > 0:
+                    #     frame.orient(frames_at_stations[-1], 'Axis', (angles_wrt_parent[m], frames_at_stations[-1].z))
+
+                    vectors_in_this_frame = generate_zero_vectors(7)
+                    vectors_in_this_frame[0] = location_of_origin
+
+                    if m == 0:
+                        pivot = frame
+                        set_7_vectors(vectors_in_this_frame, ref_frames_list[-1], frame, pivot)
+                    else:
+                        set_7_vectors(vectors_in_this_frame, ref_frames_list[-1], frame, pivot)
+                    frames_at_stations.append(frame)
+
+            rotary_component.rotary_ref_frames.append(frames_for_blades)
+            rotary_component.stations_ref_frames.append(frames_at_stations)
+
+        Gb.station_data.append([component, data_of_stations])
+    return 0
+
+
+if __name__ == '__main__':
+    print('I am the ReferenceFrames.py file!\n')
+    set_angles()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+CODE TO FIX DICT ERROR IN ANGULAR VELOCITY
+    # if not isinstance(parent_ang_vel, vec.Vector):
+    #     key = list(parent_ang_vel.keys())[0]  # Temporary fix to a serious problem
+    #     parent_ang_vel = parent_ang_vel.get(key)
+    # if not isinstance(ang_v_frame, vec.Vector):
+    #     key = list(ang_v_frame.keys())[0]
+    #     ang_v_frame = ang_v_frame.get(key)

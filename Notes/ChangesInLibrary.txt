@@ -1,0 +1,5 @@
+commented .dcm 2 lines
+commented orient_axis angular velocity checks
+commented ._dcm several lines to reduce time taken
+commented checkframe in dcm and other codes
+commented in orient_body_fixed

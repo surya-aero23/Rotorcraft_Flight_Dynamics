@@ -1,0 +1,9 @@
+1. Make the DCM process quicker by altering the code.
+
+2. Add the cyclic pitch inputs without disturbing the existing codes.
+
+3. Run the 8 rotor set up with p, q, r with every possible effect.
+
+4. Make ppt.
+
+5. Build test cases.

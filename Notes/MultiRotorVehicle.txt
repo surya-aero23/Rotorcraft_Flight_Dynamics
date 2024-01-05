@@ -1,0 +1,271 @@
+# 16/03/23
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+import time as t
+
+import Atmosphere as Atm
+import Global as Gb
+import GetInput as Gip
+import ReferenceFrames as Ref
+import NumericalMethods as Num
+import SectionalLoads as Sec
+import RotorModel as Rot
+
+
+def estimate_loads(component, component_index, c_t, omega, psi, v_cg, include_inflow=True):
+
+    def integrate_loads():
+        """
+
+        :return: [ [lift, drag, side force], [mx, my, mz] ]
+        """
+        total_lift = Num.simpsons_rule(sectional_lift, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+        total_drag = Num.simpsons_rule(sectional_drag, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+        total_side_force = Num.simpsons_rule(sectional_side_force, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+        total_moment_x = Num.simpsons_rule(sectional_moment_x, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+        total_moment_y = Num.simpsons_rule(sectional_moment_y, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+        total_moment_z = Num.simpsons_rule(sectional_moment_z, Gb.station_data[component_index][1][0][0], Gb.station_data[component_index][1][-1][0])
+        total_forces = [total_lift, total_drag, total_side_force]
+        total_moments = [total_moment_x, total_moment_y, total_moment_z]
+        return [total_forces, total_moments]
+
+    blade_wise = []
+    inflow = 0
+    ref = component.stations_ref_frames
+
+    for i in range(len(ref)):   # One iteration per blade
+        station_index = 0
+        sectional_lift, sectional_drag, sectional_side_force, sectional_moment_x, sectional_moment_y, sectional_moment_z = [], [], [], [], [], []
+        cyclic_theta = Gb.theta_0 + Gb.theta_1c * np.cos(psi) + Gb.theta_1s * np.sin(psi)
+        for j in range(2, len(ref[i]), 3):  # Fetching just the station pitch reference frames
+
+            # Velocities at the fetched reference frames
+            frame = ref[i][j]
+            vel = Ref.find_net_vel_of(component, frame)
+
+            # Adding inflow to u_p
+            if include_inflow is True:
+                pv = frame.__dict__['position_vector']
+                pv = pv.dot(frame.x)
+                inflow = Rot.inflow(component, c_t, v_cg=v_cg, psi=psi, c=2, r=pv, k=i+1)
+                inflow = -inflow * omega * component.radius * component.rotary_ref_frames[0].z
+
+            inflow = Ref.transform_vector(inflow, component.rotary_ref_frames[0], frame)
+            vel = vel + inflow
+            u_r, u_t, u_p = Ref.vec_to_list(vel)
+            if component.rpm[-1] < 0:
+                u_t = -u_t
+
+            # Effective AoA calculation
+            phi = np.arctan(float(u_p / u_t))
+            theta = float(np.radians(Gb.station_data[component_index][1][station_index][1]) + cyclic_theta)
+            alpha_eff = theta + phi  # Check if it is + or -
+
+            # Load calculation
+            c_l = Sec.s_cl(alpha_eff)
+            ' Put proper chord, cd0, cm based on section location '
+            lift = Sec.s_lift(u_p, u_t, c_l, 0.5)
+            drag = Sec.s_drag(u_p, u_t, 0.5, 0.01)
+            moment = Sec.s_moment(u_p, u_t, 0.5, -0.0026)
+
+            # Loads adjusted for induced inflow angle (Transformed to station co-ords)
+            lift_in_station = lift * np.cos(phi) - drag * np.sin(phi)
+            drag_in_station = -(lift * np.sin(phi) + drag * np.cos(phi))
+            if component.rpm[-1] < 0:
+                drag_in_station = -drag_in_station
+            'What is the correct direction for the assignment of drag'
+            load_vector = drag_in_station * frame.y + lift_in_station * frame.z   # Signs given conventionally
+            moment_in_station = moment * frame.x
+            frame.__dict__.update({'frame_loads': [Ref.vec_to_list(load_vector), Ref.vec_to_list(moment_in_station)]})
+
+            # Further calculations and appends for integration
+            load_vector, moment_in_station = Ref.find_net_loads(frame, component.rotary_ref_frames[0])
+            drag, side, lift = Ref.vec_to_list(load_vector)
+            moment_x, moment_y, moment_z = Ref.vec_to_list(moment_in_station)
+            sectional_lift.append(lift)
+            sectional_drag.append(drag)
+            sectional_side_force.append(side)
+            sectional_moment_x.append(moment_x)
+            sectional_moment_y.append(moment_y)
+            sectional_moment_z.append(moment_z)
+
+            # Loop for station_index
+            station_index += 1
+
+            # Print for checks
+            # print(f"frame: {frame}\nvel: {vel}\nload_components: {lift, drag, side}\n")
+        # print(f"frame: {frame}\ncomponents: {u_r, u_t, u_p}\n")
+        v = integrate_loads()
+        blade_wise.append(v)
+
+    return blade_wise
+
+
+if __name__ == '__main__':
+    print('I am MultiRotorVehicle.py\n')
+
+    Atm.atm_cal()
+    Gip.read_inputs(r'InputData.xlsx')
+    v_cg = [0, 0, 0]
+    Ref.set_angles([0, 0, 0, 0, 0, 0])
+    Ref.create_cg_frame(v_cg)
+    Ref.create_rotating_component(Gb.rotary_components)
+
+    rho = Gb.Atmos.density
+    d_psi = Gb.RotatingComponent.d_psi
+    n = len(Gb.rotary_components)
+    blade_lift = []
+    T = Gb.vehicle_parameters[0].mass * Gb.g / n
+    start = t.time()
+
+    comp_loads = []
+    az = []
+    overall_thrust, overall_mz = [], []
+    psi = 0
+    rotor_1_f, rotor_1_m, rotor_2_f, rotor_2_m = [], [], [], []
+
+    while psi <= (2 + 0.01) * Gb.PI:
+        print(f"\n\nPsi = {np.degrees(psi)} deg")
+        thrust, mz = [], []
+        for i in range(n):
+            component = Gb.rotary_components[i]
+            print(f"\nComponent name: {component.component_name}")
+            a = t.time()
+            resultant_force = [0, 0, 0]
+            resultant_moment = [0, 0, 0]
+
+            for blade in range(1, len(component.rotary_ref_frames)):
+                for j in range(0, len(component.rotary_ref_frames[blade]), 4):
+                    Ref.orient_azimuth_with_psi(component.rotary_ref_frames[0], component.rotary_ref_frames[blade][j], component, blade, psi)
+
+            c_t = T / (rho * (component.radius ** 4) * Gb.PI * (component.omega ** 2))
+            Ref.net_vel_update_for_component(component)
+            component_wise_thrust = estimate_loads(component, i, c_t, component.omega, psi, v_cg)
+            # component_wise_thrust = estimate_loads(component, i, c_t, component.omega, psi, v_cg, False)
+
+            for x in range(len(component_wise_thrust)):
+                resultant_force = np.add(resultant_force, component_wise_thrust[x][0])
+                resultant_moment = np.add(resultant_moment, component_wise_thrust[x][1])
+
+            if i == 0:
+                rotor_1_f.append(resultant_force[0])
+                rotor_1_m.append(resultant_moment[-1])
+
+            if i == 1:
+                rotor_2_f.append(resultant_force[0])
+                rotor_2_m.append(resultant_moment[-1])
+
+            thrust.append([component_wise_thrust[g][0][0] for g in range(len(component_wise_thrust))])
+            mz.append([component_wise_thrust[g][1][-1] for g in range(len(component_wise_thrust))])
+            # component_thrust_at_azimuth = [component_wise[g][0][0] for g in range(len(component_wise))]
+            # component_mz_at_azimuth = [component_wise[g][1][-1] for g in range(len(component_wise))]
+            print(f"Forces: {resultant_force}\nMoments: {resultant_moment}\nTime for Component: {t.time() - a} seconds")
+            # print('* -- ' * 70, '\n')
+        overall_thrust.append(thrust)
+        overall_mz.append(mz)
+        az.append(psi * 180 / np.pi)
+        psi = psi + d_psi
+        break
+    print(f"\nTime taken: {t.time() - start} sec")
+    # print(overall_thrust)
+    # print()
+    # print(overall_mz)
+    # component_wise_thrust = []
+    # component_wise_mz = []
+    #
+    # for component_no in range(len(Gb.rotary_components)):
+    #     blade_1_thrust, blade_2_thrust, blade_3_thrust, blade_4_thrust = [], [], [], []
+    #     blade_1_mz, blade_2_mz, blade_3_mz, blade_4_mz = [], [], [], []
+    #     for psi in range(len(az)):
+    #         blade_1_thrust.append(overall_thrust[psi][component_no][0])
+    #         blade_2_thrust.append(overall_thrust[psi][component_no][1])
+    #         blade_3_thrust.append(overall_thrust[psi][component_no][2])
+    #         blade_4_thrust.append(overall_thrust[psi][component_no][3])
+    #         blade_1_mz.append(overall_mz[psi][component_no][0])
+    #         blade_2_mz.append(overall_mz[psi][component_no][1])
+    #         blade_3_mz.append(overall_mz[psi][component_no][2])
+    #         blade_4_mz.append(overall_mz[psi][component_no][3])
+    #     component_wise_thrust.append([blade_1_thrust, blade_2_thrust, blade_3_thrust, blade_4_thrust])
+    #     component_wise_mz.append([blade_1_mz, blade_2_mz, blade_3_mz, blade_4_mz])
+    #
+    # fig, ax = plt.subplots(nrows=1, ncols=2)
+    # legend = ["blade_1", "blade_2", "blade_3", "blade_4"]
+    # color = ['red', 'blue', 'green', 'brown']
+    # for i in range(len(component_wise_mz)):
+    #     for j in range(len(component_wise_mz[i])):
+    #         ax[i].plot(az, component_wise_mz[i][j], label=legend[j], color=color[j])
+
+    # xTicks = [i for i in range(0, 361, 90)]
+    # # fig = plt.figure()
+    # # plt.rcParams["axes.facecolor"] = '#FFE4E1'
+    # # ax = fig.add_subplot(121)
+    # # ax.plot(az, rotor_1_f, color='red')
+    # # ax.set_title('rotor_1 (anti-clockwise from top-view)', fontsize=18)
+    # # ax.set_xticks(xTicks)
+    # # ax = fig.add_subplot(122)
+    # # ax.plot(az, rotor_2_f, color='red')
+    # # ax.set_title('rotor_2 (clockwise from top-view)', fontsize=18)
+    # # ax.set_xticks(xTicks)
+    # fig.text(0.5, 0.04, '\u03A8 in deg', ha='center', va='center', fontsize=18)
+    # fig.text(0.05, 0.5, 'Moment in N m', ha='center', va='center', rotation='vertical', fontsize=18)
+    # # plt.show()
+
+    # ax[0].set_facecolor('#FFE4E1')
+    # ax[0].set_title('rotor_1 (anti-clockwise from top-view)', fontsize=16)
+    # ax[0].set_xticks(xTicks)
+    # ax[1].set_facecolor('#FFE4E1')
+    # ax[1].set_title('rotor_2 (clockwise from top-view)', fontsize=16)
+    # ax[1].set_xticks(xTicks)
+    #
+    # plt.show()
+
+    # fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(nrows=2, ncols=2, sharex='col', sharey='row')
+    # fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, sharey='all')
+    # plt.rcParams['xtick.direction'] = 'out'
+    # plt.rcParams['ytick.direction'] = 'out'
+    #
+    # ax1.set_facecolor('#FFE4E1')
+    # ax1.set_title('rotor_1', fontsize=16)
+    # ax2.set_facecolor('#FFE4E1')
+    # ax2.set_title('rotor_2', fontsize=16)
+    # ax3.set_facecolor('#FFE4E1')
+    # ax3.set_title('rotor_3', fontsize=16)
+    # ax4.set_facecolor('#FFE4E1')
+    # ax4.set_title('rotor_4', fontsize=16)
+
+    # color = ['red', 'blue', 'green', 'brown']
+    # label = ['blade_1', 'blade_2', 'blade_3', 'blade_4']
+    # line_obj = []
+    #
+    # for j in range(4):
+    #     line_obj.append(ax1.plot(az, comp_loads[0][j], color=color[j], label=label[0])[0])
+    #     ax2.plot(az, comp_loads[1][j], color=color[j], label=label[1])
+    # ax3.plot(az, comp_loads[2][j], color=color[j], label=label[2])
+    # ax4.plot(az, comp_loads[3][j], color=color[j], label=label[3])
+
+    # xTicks = [i for i in range(0, 361, 90)]
+    # ax1.set_xticks(xTicks)
+    # ax2.set_xticks(xTicks)
+    # ax1.tick_params(axis='both', which='major', labelsize=14)
+    # ax2.tick_params(axis='x', which='major', labelsize=14)
+    # ax1.tick_params(axis='y', which='major', labelsize=14)
+    # fig.text(0.5, 0.04, '\u03A8 in deg', ha='center', va='center', fontsize=18)
+    # fig.text(0.05, 0.5, 'Thrust in N', ha='center', va='center', rotation='vertical', fontsize=18)
+    # ax4.set_xticklabels(xticks)
+    # fig.suptitle(f'Blade-wise azimuthal thrust variation V@cg = {v_cg} for 4 rotors', fontsize=18)
+    # fig.legend(line_obj, labels=label, title="Legend", fontsize=14, loc='lower left', ncol=4)
+    # plt.tight_layout()
+    # ax1.set_ylabel('Thrust (N)', fontsize=16)
+    # ax3.set_ylabel('Thrust (N)', fontsize=16)
+    # ax3.set_xlabel('Psi (deg)', fontsize=16)
+    # ax3.set_xticklabels(xticks)
+    # ax4.set_xlabel('Psi (deg)', fontsize=16)
+    # plt.show()
+
+# blade_1.append(component_wise[0][0][0])
+# blade_2.append(component_wise[1][0][0])
+# blade_3.append(component_wise[2][0][0])
+# blade_4.append(component_wise[3][0][0])
+# print(blade_1, blade_2, blade_3, blade_4, sep='\n')

@@ -1,0 +1,25 @@
+# def find_net_vel_of(r, frame_of_pv):
+#
+#     if frame_of_pv == Gb.body_fixed_cg:
+#         '- to correct error'
+#         return -Gb.body_fixed_cg.__dict__.get('_trans_vel_dict', 0)
+#
+#     else:
+#         if r == 0:
+#             parent = [*frame_of_pv.__dict__.get('_dcm_dict').keys()]
+#             parent = parent[0]
+#         else:
+#             parent = [*r.__dict__.get('args')]
+#             parent = parent[0][1]
+#
+#         r_parent = parent.__dict__.get('_pos_vec_dict', 0)
+#         frame_velocity = find_net_vel_of(r_parent, parent)
+#         frame_velocity = transform_vector(frame_velocity, parent, frame_of_pv)
+#         # frame_velocity = frame_velocity.express(frame_of_pv)
+#         omega = find_ang_vel_in(frame_of_pv)
+#         wxr = omega.cross(r)
+#
+#         net_vel = frame_of_pv.__dict__.get('_trans_vel_dict', 0) + frame_velocity + wxr.express(frame_of_pv)
+#         print(f"\tFrame: {frame_of_pv}\t\n\tTrans Vel: {frame_of_pv.__dict__.get('_trans_vel_dict', 0)}\n\tFrame Velocity: {frame_velocity}\n\twxr : {wxr.express(frame_of_pv)}\n\tNet Velocity: {net_vel}\n\tpv: {r_parent}\n")
+#
+#     return net_vel

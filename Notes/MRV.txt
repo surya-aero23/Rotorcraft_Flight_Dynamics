@@ -1,0 +1,168 @@
+# 23 - 03 - 23
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+import time as t
+
+import Atmosphere as Atm
+import Global as Gb
+import GetInput as Gip
+import ReferenceFrames as Ref
+import NumericalMethods as Num
+import FlapDynamics as Flap
+import SectionalLoads as Sec
+import RotorModel as Rot
+
+beta = []
+beta_blade = []
+
+
+def estimate_loads(component, c_t, omega, psi, v_cg, include_inflow=True):
+
+    def integrate_loads():
+        """
+
+        :return: [ [drag, side force, lift], [mx, my, mz] ]
+        """
+        total_lift = Num.simpsons_rule(sectional_lift, component.station_data[0][0], component.station_data[-1][0])
+        total_drag = Num.simpsons_rule(sectional_drag, component.station_data[0][0], component.station_data[-1][0])
+        total_side_force = Num.simpsons_rule(sectional_side_force, component.station_data[0][0], component.station_data[-1][0])
+        total_moment_x = Num.simpsons_rule(sectional_moment_x, component.station_data[0][0], component.station_data[-1][0])
+        total_moment_y = Num.simpsons_rule(sectional_moment_y, component.station_data[0][0], component.station_data[-1][0])
+        total_moment_z = Num.simpsons_rule(sectional_moment_z, component.station_data[0][0], component.station_data[-1][0])
+        total_forces = [total_drag, total_side_force, total_lift]
+        total_moments = [total_moment_x, total_moment_y, total_moment_z]
+        return [total_forces, total_moments]
+
+    blade_wise = []
+    inflow = 0
+    ref = component.stations_ref_frames
+    Ref.net_vel_update_for_component(component)
+
+    for i in range(len(ref)):   # One iteration per blade
+        station_index = 0
+        sectional_lift, sectional_drag, sectional_side_force, sectional_moment_x, sectional_moment_y, sectional_moment_z = [], [], [], [], [], []
+        cyclic_theta = Gb.theta_0 + Gb.theta_1c * np.cos(psi) + Gb.theta_1s * np.sin(psi)
+
+        for j in range(len(ref[i])):  # Fetching just the station pitch reference frames
+            'Velocities at the fetched reference frames'
+            frame = ref[i][j]
+            vel = Ref.find_net_vel_of(component, frame, acceleration=False)
+
+            'Adding inflow to u_p'
+            if include_inflow is True:
+                pv = frame.__dict__['position_vector']
+                pv = pv.dot(frame.x)
+                inflow = Rot.inflow(component, c_t, v_cg=v_cg, psi=psi, c=3, r=pv, k=i+1)
+                inflow = -inflow * omega * component.radius * component.rotary_ref_frames[0].z
+            inflow = Ref.transform_vector(inflow, component.rotary_ref_frames[0], frame)
+            vel = vel + inflow
+            theta = float(np.radians(component.station_data[station_index][-1]) + cyclic_theta)
+            # v = Gb.station_data[component_index][1][station_index][1]
+            Flap.aerodynamic_load_at_station(component, frame, vel, theta)
+            [drag, side, lift], [moment_x, moment_y, moment_z] = Ref.find_loads(frame, component.rotary_ref_frames[i+1][-1])
+            # print(lift)
+            sectional_lift.append(lift)
+            sectional_drag.append(drag)
+            sectional_side_force.append(side)
+            sectional_moment_x.append(moment_x)
+            sectional_moment_y.append(moment_y)
+            sectional_moment_z.append(moment_z)
+
+            # Loop for station_index
+            station_index += 1
+        v = integrate_loads()
+        'Update the integrated loads to the torsion hinge frame to calculate flap hinge loads'
+        component.rotary_ref_frames[i + 1][-1].__dict__['frame_loads'] = v
+        aerodynamic_loads = Ref.find_loads(component.rotary_ref_frames[i + 1][-1], component.rotary_ref_frames[i+1][1])
+        beta = component.rotary_ref_frames[i+1][1].__dict__.get('flap_angle', 0)
+        beta_dot = Ref.vec_to_list(component.rotary_ref_frames[i+1][1].__dict__['w_frame'])[1]
+        # print(f"blade: {i+1}\ninit_beta: {beta}\ninit_beta_dot: {beta_dot}")
+        new_beta, new_beta_dot = Num.runge_kutta_solver(Flap.beta_double_dot, [beta, beta_dot], psi, psi + d_psi, d_psi, [component, i, aerodynamic_loads[1][1], component.rotary_ref_frames[i + 1][1], component.rotary_ref_frames[i + 1][-1]])
+        component.rotary_ref_frames[i+1][1].__dict__['flap_angle'] = new_beta
+        component.rotary_ref_frames[i+1][1].__dict__['w_frame'] = new_beta_dot * component.rotary_ref_frames[i+1][1].y
+        component.rotary_ref_frames[i + 1][1].__dict__['frame_loads'] = aerodynamic_loads
+        # print(f"beta: {new_beta}\nbeta_dot: {new_beta_dot}\n")
+    beta_dob_dot = Flap.beta_double_dot([new_beta, new_beta_dot], psi, component, i, aerodynamic_loads[1][1], component.rotary_ref_frames[i + 1][1], component.rotary_ref_frames[i + 1][-1])
+    return Ref.vec_to_list(inflow), new_beta, new_beta_dot, beta_dob_dot[-1]
+
+
+if __name__ == '__main__':
+    print('I am MultiRotorVehicle.py\n')
+
+    Atm.atm_cal()
+    Gip.read_inputs(r'InputData.xlsx')
+    v_cg = [0, 0, 0]
+    Ref.set_angles([0, 0, 0, 0, 0, 0])
+    Ref.create_cg_frame(v_cg)
+    Ref.create_rotating_component(Gb.rotary_components)
+
+    rho = Gb.Atmos.density
+    d_psi = Gb.RotatingComponent.d_psi
+    n = len(Gb.rotary_components)
+    blade_lift = []
+    T = Gb.vehicle_parameters[0].mass * Gb.g / n
+    start = t.time()
+
+    comp_loads = []
+    az = []
+    overall_thrust, overall_mz = [], []
+    psi = 0
+    load_coefficients = [None] * n
+
+    while psi <= (2 + 0.01) * Gb.PI:
+        print(f"\n\nPsi = {np.degrees(psi)} deg")
+        thrust, mz = [], []
+        for i in range(n):
+            component = Gb.rotary_components[i]
+            print(f"\nComponent name: {component.component_name}")
+            a = t.time()
+            resultant_force = [0, 0, 0]
+            resultant_moment = [0, 0, 0]
+
+            for blade in range(1, len(component.rotary_ref_frames)):
+                for j in range(0, len(component.rotary_ref_frames[blade]), 4):
+                    Ref.orient_azimuth_with_psi(component.rotary_ref_frames[0], component.rotary_ref_frames[blade][j], component, blade, psi)
+            if psi == 0:
+                c_t = T / (rho * (component.radius ** 4) * Gb.PI * (component.omega ** 2))
+                c_mx, c_my = 0, 0
+                load_coefficients[i] = [c_t, c_mx, c_my]
+            beta.append(estimate_loads(component, load_coefficients[i], component.omega, psi, v_cg))
+            # estimate_loads(component, i, c_t, component.omega, psi, v_cg, False)
+
+            'Transfering the forces and moments to hub fixed nr frame'
+            component_wise_loads = []
+            for blade in range(component.blade_no):
+                ab = Ref.find_loads(component.rotary_ref_frames[blade + 1][1], component.rotary_ref_frames[0])
+                component_wise_loads.append(ab)
+
+            for x in range(len(component_wise_loads)):
+                resultant_force = np.add(resultant_force, component_wise_loads[x][0])
+                resultant_moment = np.add(resultant_moment, component_wise_loads[x][1])
+
+            c_t = resultant_force[2] / (rho * (component.radius ** 4) * Gb.PI * (component.omega ** 2))
+            c_mx = resultant_moment[0] / (rho * (component.radius ** 4) * Gb.PI * (component.omega ** 2) * component.radius)
+            c_my = resultant_moment[1] / (rho * (component.radius ** 4) * Gb.PI * (component.omega ** 2) * component.radius)
+            print(c_t)
+            # load_coefficients[i] = [c_t, round(c_mx, 5), round(c_my, 5)]
+            print(f"Forces: {resultant_force}\nMoments: {resultant_moment}\nTime for Component: {t.time() - a} seconds")
+
+        az.append(psi * 180 / np.pi)
+        psi = psi + d_psi
+        # break
+    print(f"\nTime taken: {t.time() - start} sec")
+
+
+inflow_blade = [(-beta[i][0][-1]) for i in range(len(beta))]
+beta_blade = [(180 * beta[i][1] / Gb.PI) for i in range(len(beta))]
+beta_dot_blade = [(180 * beta[i][2] / Gb.PI) for i in range(len(beta))]
+beta_dob_dot = [(180 * beta[i][3] / Gb.PI) for i in range(len(beta))]
+plt.plot(az, beta_blade, label='beta')
+plt.plot(az, beta_dot_blade, label='beta_dot')
+plt.plot(az, beta_dob_dot, label='beta_double_dot')
+plt.legend()
+plt.show()
+plt.plot(az, inflow_blade, label='dynamic_inflow')
+plt.legend()
+plt.show()

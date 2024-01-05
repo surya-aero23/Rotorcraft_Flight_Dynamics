@@ -1,0 +1,48 @@
+import numpy as np
+
+import Global as Gb
+import NumericalMethods as Num
+
+
+def tan_alpha(v_cg):
+    u, v, w = v_cg
+    if u != 0 and w != 0:
+        return np.tan(w / u)
+    else:
+        return 0
+
+
+def inflow(component, c_t, psi=0, mu=0, c=1, k=1, v_cg=None):      # Using Newton-Raphson method
+    if v_cg is None:
+        v_cg = [0, 0, 0]
+    else:
+        omega = np.sqrt(component.rpm[0] ** 2 + component.rpm[1] ** 2 + component.rpm[2] ** 2)
+        mu = np.sqrt(v_cg[0] ** 2 + v_cg[1] ** 2) / (component.radius * omega)
+        r = 0.75 * component.radius
+
+    def momentum_theory_inflow(lamda):
+        return lamda - (0.5 * c_t / (np.sqrt(mu ** 2 + lamda ** 2))) - (mu * tan_alpha(v_cg))
+
+    def momentum_theory_inflow_derivative(lamda):
+        return 1 + (0.5 * (lamda * c_t) / ((mu ** 2 + lamda ** 2) ** 1.5))
+
+    lambda_hover = np.sqrt(c_t / 2)
+    uniform_inflow = Num.newton_raphson(momentum_theory_inflow, momentum_theory_inflow_derivative, lambda_hover)
+
+    match c:
+        case 1:
+            return uniform_inflow
+        case 2:
+            phase = 2 * Gb.PI * ((k - 1) / component.blade_no)
+            climb_inflow = mu * tan_alpha(v_cg)
+            induced_inflow = uniform_inflow - climb_inflow
+            chi = np.arcsin(mu/uniform_inflow)       # Wake Skew Angle
+            k_y = -2 * mu
+            if chi != 0:
+                k_x = 1.333 * (1 - np.cos(chi) - 1.8 * (mu ** 2)) / (np.sin(chi))
+            else:
+                k_x = 0
+            lambda_1c = k_x * (r / component.radius)
+            lambda_1s = k_y * (r / component.radius)
+            drees_inflow_ratio = climb_inflow + induced_inflow * (1 + (lambda_1c * np.cos(psi + phase)) + (lambda_1s * np.sin(psi + phase)))
+            return drees_inflow_ratio
