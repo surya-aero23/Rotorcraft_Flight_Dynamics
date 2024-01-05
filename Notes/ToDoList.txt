@@ -4,6 +4,4 @@
 
 3. Run the 8 rotor set up with p, q, r with every possible effect.
 
-4. Make ppt.
-
-5. Build test cases.
+4. Build test cases.
